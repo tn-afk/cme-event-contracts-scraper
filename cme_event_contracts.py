@@ -25,9 +25,10 @@ SECTION73_URL = f"{CME_BASE_URL}/daily_bulletin/current/Section73_Event_Contract
 SWAPS_URL = f"{CME_BASE_URL}/daily_bulletin/preliminary_voi/Event_Contracts_Swap_based.pdf"
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-# Google Sheets configuration
+# Google configuration
 TOKENS_FILE = os.path.expanduser("~/.google_tokens.json")
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+NOTIFY_EMAIL = os.environ.get('NOTIFY_EMAIL', 'tn@lynott.co')
 
 
 def download_pdf(url: str, output_path: str) -> bool:
@@ -212,18 +213,40 @@ def write_to_google_sheet(spreadsheet_id: str, section73_volume: int, swaps_volu
         return False
 
 
-def main():
-    """Main entry point."""
+def send_failure_notification(error_message: str):
+    """Send failure notification via ntfy.sh (free, no signup required)."""
+    try:
+        # ntfy.sh - free notification service
+        # User can subscribe at: https://ntfy.sh/cme-scraper-alerts
+        # Or get email alerts by subscribing with email
+
+        topic = "cme-scraper-tn-lynott"  # Unique topic for this user
+
+        requests.post(
+            f"https://ntfy.sh/{topic}",
+            data=f"CME Event Contracts Scraper FAILED\n\n{error_message}\n\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\nDashboard: https://dashboard.render.com/cron/crn-d5n4mpn5r7bs73dhbhm0",
+            headers={
+                "Title": "CME Scraper FAILED",
+                "Priority": "high",
+                "Tags": "warning",
+                "Email": NOTIFY_EMAIL,  # ntfy.sh will email this address
+            },
+            timeout=10
+        )
+        print(f"Failure notification sent to {NOTIFY_EMAIL} via ntfy.sh")
+    except Exception as e:
+        print(f"Could not send failure notification: {e}")
+
+
+def run_scraper():
+    """Main scraper logic."""
     # Get spreadsheet ID from environment or command line
     spreadsheet_id = os.environ.get('CME_SPREADSHEET_ID')
     if len(sys.argv) > 1:
         spreadsheet_id = sys.argv[1]
 
     if not spreadsheet_id:
-        print("Error: No spreadsheet ID provided.")
-        print("Usage: python3 cme_event_contracts.py <spreadsheet_id>")
-        print("Or set CME_SPREADSHEET_ID environment variable")
-        sys.exit(1)
+        raise ValueError("No spreadsheet ID provided. Set CME_SPREADSHEET_ID environment variable")
 
     # Create temp directory for PDFs
     tmp_dir = Path('/tmp/cme_pdfs')
@@ -235,9 +258,9 @@ def main():
     # Download PDFs
     print("Downloading CME Event Contracts PDFs...")
     if not download_pdf(SECTION73_URL, str(section73_path)):
-        sys.exit(1)
+        raise RuntimeError("Failed to download Section 73 PDF")
     if not download_pdf(SWAPS_URL, str(swaps_path)):
-        sys.exit(1)
+        raise RuntimeError("Failed to download Swaps PDF")
 
     # Extract volumes
     print("\nExtracting volume data...")
@@ -246,23 +269,18 @@ def main():
 
     # Extract date from Section 73 PDF
     report_date = None
-    try:
-        with pdfplumber.open(str(section73_path)) as pdf:
-            text = pdf.pages[0].extract_text()
-            # Look for date pattern like "Fri, Jan 16, 2026"
-            import re
-            match = re.search(r'(Mon|Tue|Wed|Thu|Fri),\s+(\w+)\s+(\d+),\s+(\d{4})', text)
-            if match:
-                month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
-                            'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
-                            'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
-                month = month_map.get(match.group(2), '01')
-                day = match.group(3).zfill(2)
-                year = match.group(4)
-                report_date = f"{year}-{month}-{day}"
-                print(f"Report date from PDF: {report_date}")
-    except Exception as e:
-        print(f"Could not extract date from PDF: {e}")
+    with pdfplumber.open(str(section73_path)) as pdf:
+        text = pdf.pages[0].extract_text()
+        match = re.search(r'(Mon|Tue|Wed|Thu|Fri),\s+(\w+)\s+(\d+),\s+(\d{4})', text)
+        if match:
+            month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+                        'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
+                        'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
+            month = month_map.get(match.group(2), '01')
+            day = match.group(3).zfill(2)
+            year = match.group(4)
+            report_date = f"{year}-{month}-{day}"
+            print(f"Report date from PDF: {report_date}")
 
     # Fallback to today if extraction failed
     if not report_date:
@@ -271,9 +289,23 @@ def main():
 
     # Write to Google Sheet
     print(f"\nWriting to Google Sheet...")
-    if write_to_google_sheet(spreadsheet_id, section73_volume, swaps_volume, report_date):
-        print("\nDone!")
-    else:
+    if not write_to_google_sheet(spreadsheet_id, section73_volume, swaps_volume, report_date):
+        raise RuntimeError("Failed to write to Google Sheet")
+
+    print("\nDone!")
+
+
+def main():
+    """Main entry point with error handling and email notification."""
+    try:
+        run_scraper()
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        print(f"\nFATAL ERROR: {error_msg}")
+
+        # Try to send failure notification
+        send_failure_notification(error_msg)
+
         sys.exit(1)
 
 
