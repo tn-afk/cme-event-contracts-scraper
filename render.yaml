@@ -1,0 +1,18 @@
+services:
+  - type: cron
+    name: cme-event-contracts-scraper
+    runtime: python
+    region: frankfurt
+    plan: starter
+    schedule: "0 17 * * 1-5"  # 5 PM UTC weekdays (5 PM UK in winter, 6 PM UK in summer)
+    buildCommand: pip install -r requirements.txt
+    startCommand: python cme_event_contracts.py
+    envVars:
+      - key: CME_SPREADSHEET_ID
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
