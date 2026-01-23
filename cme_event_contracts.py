@@ -46,17 +46,19 @@ def download_pdf(url: str, output_path: str) -> bool:
 
 
 def extract_section73_volume(pdf_path: str) -> int:
-    """Extract total volume from Section 73 Event Contracts PDF."""
+    """Extract total volume from Section 73 Event Contracts PDF.
+
+    Memory-optimized with garbage collection.
+    """
+    import gc
     total_volume = 0
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
                 text = page.extract_text()
                 if text:
-                    # Find all TOTAL lines and extract the first number (volume)
                     for line in text.split('\n'):
                         if line.strip().startswith('TOTAL'):
-                            # TOTAL <volume> <open_interest>
                             parts = line.split()
                             if len(parts) >= 2:
                                 try:
@@ -64,6 +66,7 @@ def extract_section73_volume(pdf_path: str) -> int:
                                     total_volume += vol
                                 except ValueError:
                                     pass
+        gc.collect()
         print(f"Section 73 total volume: {total_volume:,}")
         return total_volume
     except Exception as e:
@@ -75,30 +78,40 @@ def extract_swaps_volume(pdf_path: str) -> int:
     """Extract total volume from Event Contracts Swaps PDF.
 
     The PDF has CALLS and PUTS sections, each with a 'Totals X Y' summary line.
-    We extract the volume (first number) from these summary lines.
+    Based on analysis, these appear around pages 5 and 19.
+
+    Memory-optimized: only reads specific pages known to contain totals.
     """
+    import gc
     total_volume = 0
+
+    # Known pages with "Totals" lines (0-indexed): around pages 4-6 and 17-20
+    # We check a small range to be safe without loading entire PDF
+    pages_to_check = [4, 5, 6, 17, 18, 19, 20]
+
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
+            for page_num in pages_to_check:
+                if page_num >= len(pdf.pages):
+                    continue
+
+                text = pdf.pages[page_num].extract_text()
                 if not text:
                     continue
 
                 for line in text.split('\n'):
                     # Look for summary "Totals" lines (e.g., "Totals 735,540 1,829,470")
-                    # These appear at the end of CALLS and PUTS sections
                     if line.strip().startswith('Totals') and 'by Products' not in line:
                         parts = line.split()
                         if len(parts) >= 2:
-                            # Second element should be the volume
                             try:
                                 vol = int(parts[1].replace(',', ''))
                                 total_volume += vol
-                                print(f"  Found subtotal: {vol:,}")
+                                print(f"  Found subtotal on page {page_num+1}: {vol:,}")
                             except (ValueError, IndexError):
                                 pass
 
+        gc.collect()
         print(f"Swaps total volume: {total_volume:,}")
         return total_volume
     except Exception as e:
