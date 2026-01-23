@@ -8,8 +8,9 @@ import os
 import sys
 import re
 import json
+import gc
 import requests
-import pdfplumber
+from pypdf import PdfReader
 from datetime import datetime
 from pathlib import Path
 
@@ -48,24 +49,24 @@ def download_pdf(url: str, output_path: str) -> bool:
 def extract_section73_volume(pdf_path: str) -> int:
     """Extract total volume from Section 73 Event Contracts PDF.
 
-    Memory-optimized with garbage collection.
+    Uses pypdf for memory-efficient text extraction.
     """
-    import gc
     total_volume = 0
     try:
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    for line in text.split('\n'):
-                        if line.strip().startswith('TOTAL'):
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                try:
-                                    vol = int(parts[1].replace(',', ''))
-                                    total_volume += vol
-                                except ValueError:
-                                    pass
+        reader = PdfReader(pdf_path)
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                for line in text.split('\n'):
+                    if line.strip().startswith('TOTAL'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            try:
+                                vol = int(parts[1].replace(',', ''))
+                                total_volume += vol
+                            except ValueError:
+                                pass
+        del reader
         gc.collect()
         print(f"Section 73 total volume: {total_volume:,}")
         return total_volume
@@ -80,37 +81,37 @@ def extract_swaps_volume(pdf_path: str) -> int:
     The PDF has CALLS and PUTS sections, each with a 'Totals X Y' summary line.
     Based on analysis, these appear around pages 5 and 19.
 
-    Memory-optimized: only reads specific pages known to contain totals.
+    Uses pypdf for memory-efficient extraction, only reads specific pages.
     """
-    import gc
     total_volume = 0
 
-    # Known pages with "Totals" lines (0-indexed): around pages 4-6 and 17-20
-    # We check a small range to be safe without loading entire PDF
-    pages_to_check = [4, 5, 6, 17, 18, 19, 20]
+    # Known pages with "Totals" lines (0-indexed): CALLS around page 5, PUTS around page 19-21
+    # Checking wider range to accommodate shifts in PDF structure
+    pages_to_check = [3, 4, 5, 6, 7, 17, 18, 19, 20, 21, 22, 23]
 
     try:
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_num in pages_to_check:
-                if page_num >= len(pdf.pages):
-                    continue
+        reader = PdfReader(pdf_path)
+        for page_num in pages_to_check:
+            if page_num >= len(reader.pages):
+                continue
 
-                text = pdf.pages[page_num].extract_text()
-                if not text:
-                    continue
+            text = reader.pages[page_num].extract_text()
+            if not text:
+                continue
 
-                for line in text.split('\n'):
-                    # Look for summary "Totals" lines (e.g., "Totals 735,540 1,829,470")
-                    if line.strip().startswith('Totals') and 'by Products' not in line:
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            try:
-                                vol = int(parts[1].replace(',', ''))
-                                total_volume += vol
-                                print(f"  Found subtotal on page {page_num+1}: {vol:,}")
-                            except (ValueError, IndexError):
-                                pass
+            for line in text.split('\n'):
+                # Look for summary "Totals" lines (e.g., "Totals 735,540 1,829,470")
+                if line.strip().startswith('Totals') and 'by Products' not in line:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            vol = int(parts[1].replace(',', ''))
+                            total_volume += vol
+                            print(f"  Found subtotal on page {page_num+1}: {vol:,}")
+                        except (ValueError, IndexError):
+                            pass
 
+        del reader
         gc.collect()
         print(f"Swaps total volume: {total_volume:,}")
         return total_volume
@@ -282,18 +283,21 @@ def run_scraper():
 
     # Extract date from Section 73 PDF
     report_date = None
-    with pdfplumber.open(str(section73_path)) as pdf:
-        text = pdf.pages[0].extract_text()
-        match = re.search(r'(Mon|Tue|Wed|Thu|Fri),\s+(\w+)\s+(\d+),\s+(\d{4})', text)
-        if match:
-            month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
-                        'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
-                        'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
-            month = month_map.get(match.group(2), '01')
-            day = match.group(3).zfill(2)
-            year = match.group(4)
-            report_date = f"{year}-{month}-{day}"
-            print(f"Report date from PDF: {report_date}")
+    reader = PdfReader(str(section73_path))
+    text = reader.pages[0].extract_text()
+    del reader
+    gc.collect()
+
+    match = re.search(r'(Mon|Tue|Wed|Thu|Fri),\s+(\w+)\s+(\d+),\s+(\d{4})', text)
+    if match:
+        month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+                    'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
+                    'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
+        month = month_map.get(match.group(2), '01')
+        day = match.group(3).zfill(2)
+        year = match.group(4)
+        report_date = f"{year}-{month}-{day}"
+        print(f"Report date from PDF: {report_date}")
 
     # Fallback to today if extraction failed
     if not report_date:
