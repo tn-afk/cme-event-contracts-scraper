@@ -9,8 +9,8 @@ import sys
 import re
 import json
 import gc
+import subprocess
 import requests
-from pypdf import PdfReader
 from datetime import datetime
 from pathlib import Path
 
@@ -46,28 +46,49 @@ def download_pdf(url: str, output_path: str) -> bool:
         return False
 
 
-def extract_section73_volume(pdf_path: str) -> int:
-    """Extract total volume from Section 73 Event Contracts PDF.
+def extract_text_from_pdf(pdf_path: str) -> str:
+    """Extract text from PDF using pdftotext command line tool.
 
-    Uses pypdf for memory-efficient text extraction.
+    Uses poppler-utils pdftotext which is very memory-efficient.
     """
+    try:
+        result = subprocess.run(
+            ['pdftotext', '-layout', pdf_path, '-'],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        if result.returncode == 0:
+            return result.stdout
+        else:
+            print(f"pdftotext error: {result.stderr}")
+            return ""
+    except FileNotFoundError:
+        print("pdftotext not found - install poppler-utils")
+        return ""
+    except Exception as e:
+        print(f"Error extracting text: {e}")
+        return ""
+
+
+def extract_section73_volume(pdf_path: str) -> int:
+    """Extract total volume from Section 73 Event Contracts PDF."""
     total_volume = 0
     try:
-        reader = PdfReader(pdf_path)
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                for line in text.split('\n'):
-                    if line.strip().startswith('TOTAL'):
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            try:
-                                vol = int(parts[1].replace(',', ''))
-                                total_volume += vol
-                            except ValueError:
-                                pass
-        del reader
-        gc.collect()
+        text = extract_text_from_pdf(pdf_path)
+        if not text:
+            return 0
+
+        for line in text.split('\n'):
+            if line.strip().startswith('TOTAL'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        vol = int(parts[1].replace(',', ''))
+                        total_volume += vol
+                    except ValueError:
+                        pass
+
         print(f"Section 73 total volume: {total_volume:,}")
         return total_volume
     except Exception as e:
@@ -79,40 +100,26 @@ def extract_swaps_volume(pdf_path: str) -> int:
     """Extract total volume from Event Contracts Swaps PDF.
 
     The PDF has CALLS and PUTS sections, each with a 'Totals X Y' summary line.
-    Based on analysis, these appear around pages 5 and 19.
-
-    Uses pypdf for memory-efficient extraction, only reads specific pages.
     """
     total_volume = 0
 
-    # Known pages with "Totals" lines (0-indexed): CALLS around page 5, PUTS around page 19-21
-    # Checking wider range to accommodate shifts in PDF structure
-    pages_to_check = [3, 4, 5, 6, 7, 17, 18, 19, 20, 21, 22, 23]
-
     try:
-        reader = PdfReader(pdf_path)
-        for page_num in pages_to_check:
-            if page_num >= len(reader.pages):
-                continue
+        text = extract_text_from_pdf(pdf_path)
+        if not text:
+            return 0
 
-            text = reader.pages[page_num].extract_text()
-            if not text:
-                continue
+        for line in text.split('\n'):
+            # Look for summary "Totals" lines (e.g., "Totals 735,540 1,829,470")
+            if line.strip().startswith('Totals') and 'by Products' not in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        vol = int(parts[1].replace(',', ''))
+                        total_volume += vol
+                        print(f"  Found subtotal: {vol:,}")
+                    except (ValueError, IndexError):
+                        pass
 
-            for line in text.split('\n'):
-                # Look for summary "Totals" lines (e.g., "Totals 735,540 1,829,470")
-                if line.strip().startswith('Totals') and 'by Products' not in line:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        try:
-                            vol = int(parts[1].replace(',', ''))
-                            total_volume += vol
-                            print(f"  Found subtotal on page {page_num+1}: {vol:,}")
-                        except (ValueError, IndexError):
-                            pass
-
-        del reader
-        gc.collect()
         print(f"Swaps total volume: {total_volume:,}")
         return total_volume
     except Exception as e:
@@ -283,11 +290,7 @@ def run_scraper():
 
     # Extract date from Section 73 PDF
     report_date = None
-    reader = PdfReader(str(section73_path))
-    text = reader.pages[0].extract_text()
-    del reader
-    gc.collect()
-
+    text = extract_text_from_pdf(str(section73_path))
     match = re.search(r'(Mon|Tue|Wed|Thu|Fri),\s+(\w+)\s+(\d+),\s+(\d{4})', text)
     if match:
         month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
