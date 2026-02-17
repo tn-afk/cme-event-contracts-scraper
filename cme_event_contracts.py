@@ -307,6 +307,13 @@ def run_scraper():
         report_date = datetime.now().strftime('%Y-%m-%d')
         print(f"Using today's date: {report_date}")
 
+    # Check for stale data (PDF date should match today for weekday runs)
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    if report_date != today_str:
+        stale_msg = f"Stale PDF data: PDF date is {report_date}, expected {today_str}. Data will still be written but may be a duplicate."
+        print(f"WARNING: {stale_msg}")
+        send_failure_notification(stale_msg)
+
     # Write to Google Sheet
     print(f"\nWriting to Google Sheet...")
     if not write_to_google_sheet(spreadsheet_id, section73_volume, swaps_volume, report_date):

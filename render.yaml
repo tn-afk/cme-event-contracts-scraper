@@ -4,7 +4,7 @@ services:
     runtime: python
     region: frankfurt
     plan: starter
-    schedule: "0 17 * * 1-5"  # 5 PM UTC weekdays (5 PM UK in winter, 6 PM UK in summer)
+    schedule: "0 17 * * 1-5"  # 5 PM UTC weekdays (11 AM Chicago / 5 PM UK winter)
     buildCommand: pip install -r requirements.txt
     startCommand: python cme_event_contracts.py
     envVars:
