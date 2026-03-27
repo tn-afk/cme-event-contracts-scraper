@@ -24,11 +24,24 @@ from googleapiclient.errors import HttpError
 CME_BASE_URL = "https://www.cmegroup.com"
 SECTION73_URL = f"{CME_BASE_URL}/daily_bulletin/current/Section73_Event_Contracts.pdf"
 SWAPS_URL = f"{CME_BASE_URL}/daily_bulletin/preliminary_voi/Event_Contracts_Swap_based.pdf"
-HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Accept': 'application/pdf,*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.cmegroup.com/market-data/cme-group-benchmark-administration/event-contracts.html',
+    'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131"',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'document',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-site': 'same-origin',
+}
 
 # Google configuration
 TOKENS_FILE = os.path.expanduser("~/.google_tokens.json")
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/gmail.send',
+]
 NOTIFY_EMAIL = os.environ.get('NOTIFY_EMAIL', 'tn@lynott.co')
 
 
@@ -154,10 +167,11 @@ def get_google_credentials():
             token_data = json.load(f)
         creds = Credentials.from_authorized_user_info(token_data, SCOPES)
     else:
-        print("Error: No Google credentials found.")
-        print("Set GOOGLE_REFRESH_TOKEN, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET env vars")
-        print("Or create ~/.google_tokens.json")
-        sys.exit(1)
+        raise RuntimeError(
+            "No Google credentials found. "
+            "Set GOOGLE_REFRESH_TOKEN, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET env vars "
+            "or create ~/.google_tokens.json"
+        )
 
     # Refresh if expired
     if creds and creds.expired and creds.refresh_token:
@@ -165,8 +179,7 @@ def get_google_credentials():
             creds.refresh(Request())
             print("Refreshed Google credentials")
         except Exception as e:
-            print(f"Error refreshing credentials: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Error refreshing credentials: {e}")
 
     return creds
 
@@ -235,28 +248,37 @@ def write_to_google_sheet(spreadsheet_id: str, section73_volume: int, swaps_volu
 
 
 def send_failure_notification(error_message: str):
-    """Send failure notification via ntfy.sh (free, no signup required)."""
+    """Send failure notification email via Gmail API."""
+    import base64
+    from email.mime.text import MIMEText
+
     try:
-        # ntfy.sh - free notification service
-        # User can subscribe at: https://ntfy.sh/cme-scraper-alerts
-        # Or get email alerts by subscribing with email
+        creds = get_google_credentials()
+        service = build('gmail', 'v1', credentials=creds)
 
-        topic = "cme-scraper-tn-lynott"  # Unique topic for this user
-
-        requests.post(
-            f"https://ntfy.sh/{topic}",
-            data=f"CME Event Contracts Scraper FAILED\n\n{error_message}\n\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\nDashboard: https://dashboard.render.com/cron/crn-d5n4mpn5r7bs73dhbhm0",
-            headers={
-                "Title": "CME Scraper FAILED",
-                "Priority": "high",
-                "Tags": "warning",
-                "Email": NOTIFY_EMAIL,  # ntfy.sh will email this address
-            },
-            timeout=10
+        subject = f"CME Scraper FAILED — {datetime.now().strftime('%Y-%m-%d')}"
+        body = (
+            f"CME Event Contracts Scraper FAILED\n\n"
+            f"{error_message}\n\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+            f"Dashboard: https://dashboard.render.com/cron/crn-d5n4mpn5r7bs73dhbhm0"
         )
-        print(f"Failure notification sent to {NOTIFY_EMAIL} via ntfy.sh")
+
+        message = MIMEText(body)
+        message['to'] = NOTIFY_EMAIL
+        message['subject'] = subject
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+        service.users().messages().send(
+            userId='me',
+            body={'raw': raw}
+        ).execute()
+
+        print(f"Failure notification email sent to {NOTIFY_EMAIL}")
     except Exception as e:
-        print(f"Could not send failure notification: {e}")
+        print(f"Could not send failure notification email: {e}")
+        # Fallback: print the error prominently so it shows in Render logs
+        print(f"!!! ALERT: {error_message}")
 
 
 def run_scraper():
@@ -287,6 +309,13 @@ def run_scraper():
     print("\nExtracting volume data...")
     section73_volume = extract_section73_volume(str(section73_path))
     swaps_volume = extract_swaps_volume(str(swaps_path))
+
+    # Zero-volume guard: if both are 0, something went wrong with extraction
+    if section73_volume == 0 and swaps_volume == 0:
+        raise RuntimeError(
+            "Both Section 73 and Swaps volumes are 0. "
+            "PDF format may have changed or extraction failed."
+        )
 
     # Extract date from Section 73 PDF
     report_date = None
@@ -324,6 +353,13 @@ def run_scraper():
 
 def main():
     """Main entry point with error handling and email notification."""
+    # Handle --test-notification flag
+    if '--test-notification' in sys.argv:
+        print("Sending test notification email...")
+        send_failure_notification("This is a TEST notification. The scraper is working correctly.")
+        print("Test complete.")
+        return
+
     try:
         run_scraper()
     except Exception as e:
