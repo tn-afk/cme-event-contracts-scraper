@@ -35,12 +35,11 @@ HEADERS = {
 # requests on data-center IPs based on TLS handshake, so we mimic a real Chrome client.
 IMPERSONATE = "chrome131"
 
-# Google configuration
+# Google configuration. Render's GOOGLE_REFRESH_TOKEN was granted with only the
+# spreadsheets scope; asking for additional scopes here triggers invalid_scope on
+# refresh. Failure notifications are handled by Render's notifyOnFail email.
 TOKENS_FILE = os.path.expanduser("~/.google_tokens.json")
-SCOPES = [
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/gmail.send',
-]
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 NOTIFY_EMAIL = os.environ.get('NOTIFY_EMAIL', 'tn@lynott.co')
 
 
@@ -248,37 +247,8 @@ def write_to_google_sheet(spreadsheet_id: str, section73_volume: int, swaps_volu
 
 
 def send_failure_notification(error_message: str):
-    """Send failure notification email via Gmail API."""
-    import base64
-    from email.mime.text import MIMEText
-
-    try:
-        creds = get_google_credentials()
-        service = build('gmail', 'v1', credentials=creds)
-
-        subject = f"CME Scraper FAILED — {datetime.now().strftime('%Y-%m-%d')}"
-        body = (
-            f"CME Event Contracts Scraper FAILED\n\n"
-            f"{error_message}\n\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
-            f"Dashboard: https://dashboard.render.com/cron/crn-d5n4mpn5r7bs73dhbhm0"
-        )
-
-        message = MIMEText(body)
-        message['to'] = NOTIFY_EMAIL
-        message['subject'] = subject
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-        service.users().messages().send(
-            userId='me',
-            body={'raw': raw}
-        ).execute()
-
-        print(f"Failure notification email sent to {NOTIFY_EMAIL}")
-    except Exception as e:
-        print(f"Could not send failure notification email: {e}")
-        # Fallback: print the error prominently so it shows in Render logs
-        print(f"!!! ALERT: {error_message}")
+    """Log a prominent ALERT line. Render's notifyOnFail emails on non-zero exit."""
+    print(f"!!! ALERT: {error_message}")
 
 
 def run_scraper():
