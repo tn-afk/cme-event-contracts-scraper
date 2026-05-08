@@ -10,9 +10,10 @@ import re
 import json
 import gc
 import subprocess
-import requests
 from datetime import datetime
 from pathlib import Path
+
+from curl_cffi import requests as curl_requests
 
 # Google Sheets API
 import google.auth
@@ -24,17 +25,15 @@ from googleapiclient.errors import HttpError
 CME_BASE_URL = "https://www.cmegroup.com"
 SECTION73_URL = f"{CME_BASE_URL}/daily_bulletin/current/Section73_Event_Contracts.pdf"
 SWAPS_URL = f"{CME_BASE_URL}/daily_bulletin/preliminary_voi/Event_Contracts_Swap_based.pdf"
+REFERER_URL = "https://www.cmegroup.com/market-data/cme-group-benchmark-administration/event-contracts.html"
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Accept': 'application/pdf,*/*',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://www.cmegroup.com/market-data/cme-group-benchmark-administration/event-contracts.html',
-    'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131"',
-    'sec-ch-ua-platform': '"Windows"',
-    'sec-fetch-dest': 'document',
-    'sec-fetch-mode': 'navigate',
-    'sec-fetch-site': 'same-origin',
+    'Referer': REFERER_URL,
 }
+# Browser identity for curl_cffi TLS fingerprint impersonation. Akamai blocks plain
+# requests on data-center IPs based on TLS handshake, so we mimic a real Chrome client.
+IMPERSONATE = "chrome131"
 
 # Google configuration
 TOKENS_FILE = os.path.expanduser("~/.google_tokens.json")
@@ -45,10 +44,11 @@ SCOPES = [
 NOTIFY_EMAIL = os.environ.get('NOTIFY_EMAIL', 'tn@lynott.co')
 
 
-def download_pdf(url: str, output_path: str) -> bool:
-    """Download PDF from URL."""
+def download_pdf(url: str, output_path: str, session=None) -> bool:
+    """Download PDF from URL using curl_cffi with Chrome TLS impersonation."""
     try:
-        response = requests.get(url, headers=HEADERS, timeout=60)
+        client = session or curl_requests.Session(impersonate=IMPERSONATE)
+        response = client.get(url, headers=HEADERS, timeout=60)
         response.raise_for_status()
         with open(output_path, 'wb') as f:
             f.write(response.content)
@@ -298,11 +298,18 @@ def run_scraper():
     section73_path = tmp_dir / 'section73.pdf'
     swaps_path = tmp_dir / 'swaps.pdf'
 
-    # Download PDFs
+    # Download PDFs. Prime the session with the referrer page so Akamai sees a
+    # plausible navigation flow and issues bot-clearance cookies.
     print("Downloading CME Event Contracts PDFs...")
-    if not download_pdf(SECTION73_URL, str(section73_path)):
+    session = curl_requests.Session(impersonate=IMPERSONATE)
+    try:
+        session.get(REFERER_URL, timeout=30)
+    except Exception as e:
+        print(f"Warning: priming GET failed: {e}")
+
+    if not download_pdf(SECTION73_URL, str(section73_path), session=session):
         raise RuntimeError("Failed to download Section 73 PDF")
-    if not download_pdf(SWAPS_URL, str(swaps_path)):
+    if not download_pdf(SWAPS_URL, str(swaps_path), session=session):
         raise RuntimeError("Failed to download Swaps PDF")
 
     # Extract volumes
